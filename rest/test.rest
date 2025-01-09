@@ -1,0 +1,11 @@
+POST http://127.0.0.1:5000/cut
+content-type: application/json
+
+{
+    "input_file": "fishers_100s.mp4",
+    "cutlist_file": "splits.txt",
+    "output_folder": "video_splits"
+}
+
+###
+GET http://127.0.0.1:5000/shared

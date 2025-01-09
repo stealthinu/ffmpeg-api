@@ -1,0 +1,12 @@
+# docker-compose.yml
+version: '3'
+services:
+  ffmpeg-api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    ports:
+      - "5000:5000"
+    volumes:
+      - ../src:/app/src
+      - ./shared:/shared

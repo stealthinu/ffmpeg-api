@@ -7,6 +7,17 @@ app = Flask(__name__)
 
 SHARED_FOLDER = '/shared'
 
+def validate_time_format(time_str):
+    """Validate time string format (HH:MM:SS)"""
+    try:
+        parts = time_str.split(':')
+        if len(parts) != 3:
+            return False
+        hours, minutes, seconds = map(int, parts)
+        return 0 <= hours <= 23 and 0 <= minutes <= 59 and 0 <= seconds <= 59
+    except:
+        return False
+
 def process_cutlist(cutlist_path):
     """Parse cutlist file and return list of cut specifications"""
     cuts = []
@@ -25,6 +36,42 @@ def process_cutlist(cutlist_path):
                     'output': f"{output_name}.mp4"
                 })
     return cuts
+
+def extract_muted_video(input_path, output_path):
+    """Extract video without audio using ffmpeg"""
+    cmd = [
+        'ffmpeg',
+        '-i', input_path,
+        '-an',  # No audio
+        '-c:v', 'copy',  # Copy video codec to avoid re-encoding
+        '-y',  # Overwrite output
+        output_path
+    ]
+    
+    try:
+        subprocess.run(cmd, check=True, capture_output=True)
+        return True
+    except subprocess.CalledProcessError as e:
+        print(f"Error running ffmpeg: {e.stderr.decode()}")
+        return False
+
+def extract_audio(input_path, output_path, audio_format='mp3'):
+    """Extract audio from video file using ffmpeg"""
+    cmd = [
+        'ffmpeg',
+        '-i', input_path,
+        '-vn',  # No video
+        '-acodec', 'libmp3lame' if audio_format == 'mp3' else 'pcm_s16le',  # mp3 or wav codec
+        '-y',  # Overwrite output
+        output_path
+    ]
+    
+    try:
+        subprocess.run(cmd, check=True, capture_output=True)
+        return True
+    except subprocess.CalledProcessError as e:
+        print(f"Error running ffmpeg: {e.stderr.decode()}")
+        return False
 
 def cut_video(input_path, start_time, end_time, output_path):
     """Cut video segment using ffmpeg with re-encoding"""
@@ -51,8 +98,8 @@ def cut_video(input_path, start_time, end_time, output_path):
         print(f"Error running ffmpeg: {e.stderr.decode()}")
         return False
 
-@app.route('/cut', methods=['POST'])
-def cut_videos():
+@app.route('/segments/from-file', methods=['POST'])
+def create_segments_from_file():
     data = request.get_json()
     
     # Validate request data
@@ -120,6 +167,158 @@ def list_shared():
             'shared_folder': SHARED_FOLDER
         }), 500
 
+
+@app.route('/extract-audio', methods=['POST'])
+def extract_audio_endpoint():
+    data = request.get_json()
+    
+    # Validate request data
+    required_fields = ['input_file', 'output_file']
+    if not all(field in data for field in required_fields):
+        return jsonify({
+            'error': f'Missing required fields. Required: {required_fields}'
+        }), 400
+    
+    input_file = data['input_file']
+    output_file = data['output_file']
+    audio_format = data.get('format', 'mp3').lower()
+    
+    # Validate format
+    if audio_format not in ['mp3', 'wav']:
+        return jsonify({'error': 'Unsupported audio format. Use mp3 or wav'}), 400
+    
+    # Validate input file exists
+    input_path = os.path.join(SHARED_FOLDER, input_file)
+    if not os.path.exists(input_path):
+        return jsonify({'error': 'Input file not found'}), 404
+    
+    # Ensure output file has correct extension
+    output_name = output_file if output_file.endswith(f'.{audio_format}') else f'{output_file}.{audio_format}'
+    output_path = os.path.join(SHARED_FOLDER, output_name)
+    
+    # Extract audio
+    success = extract_audio(input_path, output_path, audio_format)
+    
+    if success:
+        return jsonify({
+            'message': 'Audio extraction complete',
+            'output_file': output_name,
+            'format': audio_format
+        })
+    else:
+        return jsonify({'error': 'Failed to extract audio'}), 500
+
+
+@app.route('/extract-muted-video', methods=['POST'])
+def extract_muted_video_endpoint():
+    data = request.get_json()
+    
+    # Validate request data
+    required_fields = ['input_file', 'output_file']
+    if not all(field in data for field in required_fields):
+        return jsonify({
+            'error': f'Missing required fields. Required: {required_fields}'
+        }), 400
+    
+    input_file = data['input_file']
+    output_file = data['output_file']
+    
+    # Validate input file exists
+    input_path = os.path.join(SHARED_FOLDER, input_file)
+    if not os.path.exists(input_path):
+        return jsonify({'error': 'Input file not found'}), 404
+    
+    # Ensure output file has .mp4 extension
+    output_name = output_file if output_file.endswith('.mp4') else f'{output_file}.mp4'
+    output_path = os.path.join(SHARED_FOLDER, output_name)
+    
+    # Extract video without audio
+    success = extract_muted_video(input_path, output_path)
+    
+    if success:
+        return jsonify({
+            'message': 'Muted video extraction complete',
+            'output_file': output_name
+        })
+    else:
+        return jsonify({'error': 'Failed to extract muted video'}), 500
+
+
+@app.route('/segments', methods=['POST'])
+def create_segments():
+    data = request.get_json()
+    
+    # Validate request data
+    required_fields = ['input_file', 'segments', 'output_folder']
+    if not all(field in data for field in required_fields):
+        return jsonify({
+            'error': f'Missing required fields. Required: {required_fields}'
+        }), 400
+    
+    # Validate segments format
+    segments = data['segments']
+    if not isinstance(segments, list) or not segments:
+        return jsonify({
+            'error': 'segments must be a non-empty array'
+        }), 400
+    
+    # Validate each segment
+    for i, segment in enumerate(segments):
+        if not isinstance(segment, dict):
+            return jsonify({
+                'error': f'Invalid segment at index {i}: must be an object'
+            }), 400
+            
+        required_segment_fields = ['start_time', 'end_time', 'output_name']
+        if not all(field in segment for field in required_segment_fields):
+            return jsonify({
+                'error': f'Segment at index {i} missing required fields. Required: {required_segment_fields}'
+            }), 400
+            
+        # Validate time format
+        if not validate_time_format(segment['start_time']):
+            return jsonify({
+                'error': f'Invalid start_time format at index {i}. Required format: HH:MM:SS'
+            }), 400
+        if not validate_time_format(segment['end_time']):
+            return jsonify({
+                'error': f'Invalid end_time format at index {i}. Required format: HH:MM:SS'
+            }), 400
+    
+    input_file = data['input_file']
+    output_folder = data['output_folder']
+    
+    # Validate input file exists
+    input_path = os.path.join(SHARED_FOLDER, input_file)
+    if not os.path.exists(input_path):
+        return jsonify({'error': 'Input file not found'}), 404
+    
+    # Create output directory if it doesn't exist
+    output_dir = os.path.join(SHARED_FOLDER, output_folder)
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Process segments
+    results = []
+    for segment in segments:
+        output_path = os.path.join(output_dir, f"{segment['output_name']}.mp4")
+        success = cut_video(
+            input_path,
+            segment['start_time'],
+            segment['end_time'],
+            output_path
+        )
+        
+        results.append({
+            'output_file': os.path.join(output_folder, f"{segment['output_name']}.mp4"),
+            'start_time': segment['start_time'],
+            'end_time': segment['end_time'],
+            'success': success
+        })
+    
+    return jsonify({
+        'message': 'Processing complete',
+        'results': results
+    })
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
-    
